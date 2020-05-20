@@ -101,17 +101,16 @@ void HandleDistribute(int rank, daos_handle_t *handle,
 void daos_connect(int* rank, daos_handle_t* poh, daos_handle_t* coh,
                   uuid_t* pool_uuid, uuid_t* cont_uuid, char* svc)
 { 
-    /* TODO: if src daos path and dst daos path are false 
-    *  skip connecting to daos pool */
     int rc = 0;
     if (*rank == 0) {
         d_rank_list_t *svcl = NULL;
-	daos_pool_info_t pool_info;
-	daos_cont_info_t co_info;
+        daos_pool_info_t pool_info;
+        daos_cont_info_t co_info;
 
 	svcl = daos_rank_list_parse(svc, ":");
-	if (svcl == NULL)
-		MPI_Abort(MPI_COMM_WORLD, -1);
+	if (svcl == NULL) {
+	    MPI_Abort(MPI_COMM_WORLD, -1);
+        }
 
 	/** Connect to DAOS pool */
 	rc = daos_pool_connect(*pool_uuid, NULL, svcl, DAOS_PC_RW,
@@ -119,13 +118,13 @@ void daos_connect(int* rank, daos_handle_t* poh, daos_handle_t* coh,
         if (rc != 0) {
             MFU_LOG(MFU_LOG_INFO, "Failed to connect to pool");
         }
-	d_rank_list_free(svcl);
+        d_rank_list_free(svcl);
 
-	rc = daos_cont_open(*poh, *cont_uuid, DAOS_COO_RW, coh, &co_info,
+        rc = daos_cont_open(*poh, *cont_uuid, DAOS_COO_RW, coh, &co_info,
 			    NULL);
 	/* If NOEXIST we create it */
-	if (rc != 0) {
-            uuid_t                  cuuid;
+        if (rc != 0) {
+            uuid_t cuuid;
             rc = dfs_cont_create(*poh, cuuid, NULL, NULL, NULL);
             if (rc != 0) {
                 MFU_LOG(MFU_LOG_INFO, "Failed to create DFS container");

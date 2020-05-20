@@ -439,8 +439,8 @@ retry:
 }
 
 /*****************************
- *  * Links
- *   ****************************/
+ * Links
+ *****************************/
 
 /* call readlink, retry a few times on EINTR or EIO */
 ssize_t mfu_readlink(const char* path, char* buf, size_t bufsize)
@@ -506,8 +506,8 @@ retry:
 }
 
 /*****************************
- *  * Files
- *   ****************************/
+ * Files
+ *****************************/
 void daos_open(const char* file, int flags,
                int* mode_set, mode_t mode, mfu_file_t* mfu_file)
 {
@@ -917,8 +917,8 @@ retry:
 }
 
 /*****************************
- *  * Directories
- *   ****************************/
+ * Directories
+ *****************************/
 
 /* get current working directory, abort if fail or buffer too small */
 void mfu_getcwd(char* buf, size_t size)
