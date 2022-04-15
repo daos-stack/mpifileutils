@@ -1182,7 +1182,9 @@ int daos_connect(
              * If nothing is passed in for destination a uuid is always generated
              * unless user passed one in, because destination container labels are
              * not generated */
-            rc = daos_cont_open(*poh, da->dst_cont_uuid, DAOS_COO_RW, coh, &co_info, NULL);
+            char cont_str[130];
+            uuid_unparse(da->dst_cont_uuid, cont_str);
+            rc = daos_cont_open(*poh, cont_str, DAOS_COO_RW, coh, &co_info, NULL);
         } else {
             rc = daos_cont_open(*poh, *cont, DAOS_COO_RW, coh, &co_info, NULL);
         }
@@ -1273,14 +1275,12 @@ int daos_connect(
             }
 
             /* try to open it again */
-            if (dst_cont_passed) {
-                if (is_uuid) {
-                    rc = daos_cont_open(*poh, da->dst_cont_uuid, DAOS_COO_RW, coh, &co_info, NULL);
-                } else {
-                    rc = daos_cont_open(*poh, *cont, DAOS_COO_RW, coh, &co_info, NULL);
-                }
+            if (dst_cont_passed && !is_uuid) {
+                rc = daos_cont_open(*poh, *cont, DAOS_COO_RW, coh, &co_info, NULL);
             } else {
-                rc = daos_cont_open(*poh, da->dst_cont_uuid, DAOS_COO_RW, coh, &co_info, NULL);
+                char cont_str[130];
+                uuid_unparse(da->dst_cont_uuid, cont_str);
+                rc = daos_cont_open(*poh, cont_str, DAOS_COO_RW, coh, &co_info, NULL);
             }
             if (rc != 0) {
                 MFU_LOG(MFU_LOG_ERR, "Failed to open container: "DF_RC, DP_RC(rc));
@@ -1371,7 +1371,7 @@ static int mfu_dfs_mount(
   daos_handle_t* coh)
 {
     /* Mount dfs_sys */
-    int rc = dfs_sys_mount(*poh, *coh, O_RDWR, DFS_SYS_NO_LOCK, &mfu_file->dfs_sys);
+    int rc = dfs_sys_mount(*poh, *coh, O_RDWR, DFS_SYS_NO_CACHE, &mfu_file->dfs_sys);
     if (rc !=0) {
         MFU_LOG(MFU_LOG_ERR, "Failed to mount DAOS filesystem (DFS): %s", strerror(rc));
         rc = -1;
@@ -2112,13 +2112,20 @@ static int mfu_daos_obj_sync_recx_array(
     mfu_daos_stats_t* stats)
 {
     bool        all_dst_equal = true;   /* equal until found otherwise */
-    uint32_t    max_number = 5;         /* max recxs per fetch */
+    uint32_t    max_number = 1;         /* max recxs per fetch */
     char*       src_buf[max_number];    /* src buffer data */
     uint64_t    src_buf_len[max_number];/* src buffer lengths */
     d_sg_list_t src_sgl;
     daos_recx_t recxs[max_number];
     daos_size_t size;
     daos_epoch_range_t eprs[max_number];
+
+    bool THIS_ONE = false;
+    if (strcmp(dkey->iov_buf, "file.mdtest.0.242") == 0) {
+        MFU_LOG(MFU_LOG_INFO, "dkey=%s", dkey->iov_buf);
+        MFU_LOG(MFU_LOG_INFO, "akey=%s", akey->iov_buf);
+        THIS_ONE = true;
+    }
 
     daos_anchor_t recx_anchor = {0};
     int rc;
@@ -2134,9 +2141,11 @@ static int mfu_daos_obj_sync_recx_array(
         }
 
         /* if no recx is returned for this dkey/akey move on */
-        if (number == 0) 
+        if (number == 0){ 
+            // MFU_LOG(MFU_LOG_INFO, "number==0");
             continue;
-
+        }
+            
         d_iov_t src_iov[number];
 
         /* set iod values */
@@ -2160,11 +2169,25 @@ static int mfu_daos_obj_sync_recx_array(
         uint64_t total_bytes = sum_uint64_t(number, src_buf_len);
 
         /* fetch recx values from source */
-        rc = daos_obj_fetch(*src_oh, DAOS_TX_NONE, 0, dkey, 1, iod,
+        rc = daos_obj_fetch(*src_oh, DAOS_TX_NONE, DAOS_COND_DKEY_FETCH, dkey, 1, iod,
                             &src_sgl, NULL, NULL);
         if (rc != 0) {
             MFU_LOG(MFU_LOG_ERR, "DAOS object fetch returned with errors "DF_RC, DP_RC(rc));
             goto out_err;
+        }
+
+        if (THIS_ONE) {
+            MFU_LOG(MFU_LOG_INFO, "number = %lu", number);
+            MFU_LOG(MFU_LOG_INFO, "size = %lu", size);
+            MFU_LOG(MFU_LOG_INFO, "recxs[0].rx_nr = %lu", recxs[0].rx_nr);
+            MFU_LOG(MFU_LOG_INFO, "src_buf_len[0] = %lu", src_buf_len[0]);
+            MFU_LOG(MFU_LOG_INFO, "total_bytes = %lu", total_bytes);
+            daos_obj_id_t *oid = (daos_obj_id_t*) (src_buf[0] + sizeof(mode_t));
+            MFU_LOG(MFU_LOG_INFO, "OID = ""%" PRIu64".""%" PRIu64, oid->hi, oid->lo);
+        }
+        // MFU_LOG(MFU_LOG_INFO, "src_buf[0] = %s", src_buf[0]);
+        if (strncmp(src_buf[0], "foo", 3) == 0) {
+            MFU_LOG(MFU_LOG_INFO, "HERE - dkey=%s", dkey->iov_buf);
         }
 
         /* Sanity check */
@@ -2174,52 +2197,6 @@ static int mfu_daos_obj_sync_recx_array(
         }
 
         stats->bytes_read += total_bytes;
-
-        /* Conditionally compare the destination before writing */
-        if (compare_dst) {
-            char*       dst_buf[number];
-            uint64_t    dst_buf_len[number];
-            d_sg_list_t dst_sgl;
-            d_iov_t     dst_iov[number];
-
-            dst_sgl.sg_nr_out = 0;
-            dst_sgl.sg_iovs   = dst_iov;
-            dst_sgl.sg_nr     = number;
-
-            /* allocate and setup dst_buf */
-            if (alloc_iov_buf(number, size, recxs, dst_iov, dst_buf, dst_buf_len) != 0) {
-                MFU_LOG(MFU_LOG_ERR, "DAOS failed to allocate destination buffer.");
-                goto out_err;
-            }
-
-            rc = daos_obj_fetch(*dst_oh, DAOS_TX_NONE, 0, dkey, 1, iod,
-                                &dst_sgl, NULL, NULL);
-            if (rc != 0) {
-                MFU_LOG(MFU_LOG_ERR, "DAOS object fetch returned with errors "DF_RC, DP_RC(rc));
-                free_iov_buf(number, dst_buf);
-                goto out_err;
-            }
-
-            /* Reset iod values after fetching the destination */
-            (*iod).iod_nr    = number;
-            (*iod).iod_size  = size;
-
-            /* Determine whether all recxs in the dst are equal to the src.
-             * If any recx is different, update all recxs in dst and flag
-             * this akey as different. */
-            if (dst_sgl.sg_nr_out > 0) {
-                stats->bytes_read += total_bytes;
-                recx_equal = true;
-                for (uint32_t i = 0; i < number; i++) {
-                    if (memcmp(src_buf[i], dst_buf[i], src_buf_len[i]) != 0) {
-                        recx_equal = false;
-                        all_dst_equal = false;
-                        break;
-                    }
-                }
-            }
-            free_iov_buf(number, dst_buf);
-        }
 
         /* Conditionally write to the destination */
         if (write_dst && !recx_equal) {
@@ -2472,6 +2449,13 @@ static int mfu_daos_flist_obj_sync(
         oid.lo = p->obj_id_lo;
         oid.hi = p->obj_id_hi;
 
+        // if (oid.hi == 937030231829513470) {
+        //     MFU_LOG(MFU_LOG_INFO, "HERE HERE HERE");
+        // }
+
+        // oid.hi = 937030231829513470;
+        // oid.lo = 0;
+
         /* Copy this object */
         rc = mfu_daos_obj_sync(da, src_coh, dst_coh, oid,
                                compare_dst, write_dst, stats);
@@ -2481,6 +2465,7 @@ static int mfu_daos_flist_obj_sync(
         }
 
         p = p->next;
+        // break;
     }
 
     return rc;
@@ -2544,6 +2529,8 @@ static int mfu_daos_obj_list_oids(
             break;
         }
     }
+
+    MFU_LOG(MFU_LOG_INFO, "oids_total = %lu", oids_total);
 
     /* close object iterator */
     rc = daos_oit_close(toh, NULL);
@@ -2618,8 +2605,11 @@ int mfu_daos_flist_sync(
 
     /* evenly spread the objects across all ranks */
     mfu_flist newflist = mfu_flist_spread(flist);
+    // MFU_LOG(MFU_LOG_INFO, "size(flist) = %lu", mfu_flist_size(flist));
+    // MFU_LOG(MFU_LOG_INFO, "size(newflist) = %lu", mfu_flist_size(newflist));
 
     /* copy object ids listed in newflist to destination in daos args */
+    // int rc = 0;
     int rc = mfu_daos_flist_obj_sync(da, newflist, da->src_coh, da->dst_coh,
                                      compare_dst, write_dst, &stats);
 
@@ -5617,7 +5607,7 @@ int daos_cont_deserialize_connect(daos_args_t *daos_args,
     } else {
         uuid_unparse(daos_args->dst_cont_uuid, cont_str);
         MFU_LOG(MFU_LOG_INFO, "Successfully created container %s", cont_str);
-        rc = daos_cont_open(daos_args->src_poh, daos_args->dst_cont_uuid,
+        rc = daos_cont_open(daos_args->src_poh, cont_str,
                             DAOS_COO_RW, &daos_args->src_coh, &co_info, NULL);
     }
     if (rc != 0) {
