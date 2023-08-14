@@ -28,7 +28,6 @@ extern "C" {
 #include "mfu_flist.h"
 #include "mfu_pred.h"
 #include "mfu_progress.h"
-#include "mfu_bz2.h"
 
 #endif /* MFU_H */
 

@@ -125,10 +125,6 @@ IF(ENABLE_DAOS)
   ADD_DEFINITIONS(-DDAOS_SUPPORT)
 ENDIF(ENABLE_DAOS)
 
-## BZip2
-FIND_PACKAGE(BZip2 REQUIRED)
-LIST(APPEND MFU_EXTERNAL_LIBS ${BZIP2_LIBRARIES})
-
 ## libcap for checks on linux capabilities
 FIND_PACKAGE(LibCap)
 IF(LibCap_FOUND)
@@ -250,7 +246,6 @@ LIST(APPEND libcircle_srcs
 LIST(APPEND libmfu_install_headers
   mpifileutils/src/common/mfu.h
   mpifileutils/src/common/mfu_errors.h
-  mpifileutils/src/common/mfu_bz2.h
   mpifileutils/src/common/mfu_flist.h
   mpifileutils/src/common/mfu_flist_internal.h
   mpifileutils/src/common/mfu_io.h
@@ -270,10 +265,6 @@ INSTALL(FILES ${libmfu_install_headers} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # common library
 LIST(APPEND libmfu_srcs
-  mpifileutils/src/common/mfu_bz2.c
-  mpifileutils/src/common/mfu_bz2_static.c
-  mpifileutils/src/common/mfu_compress_bz2_libcircle.c
-  mpifileutils/src/common/mfu_decompress_bz2_libcircle.c
   mpifileutils/src/common/mfu_flist.c
   mpifileutils/src/common/mfu_flist_chunk.c
   mpifileutils/src/common/mfu_flist_copy.c
