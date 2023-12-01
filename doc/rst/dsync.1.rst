@@ -15,6 +15,9 @@ dsync makes DEST match SRC, adding missing entries from DEST, and updating
 existing entries in DEST as necessary so that SRC and DEST have identical
 content, ownership, timestamps, and permissions.
 
+dsync is similar to :manpage:`rsync(1)` archive mode for creating and
+then maintaining an identical copy of a source directory tree.
+
 OPTIONS
 -------
 
@@ -39,11 +42,15 @@ OPTIONS
    "GB" can immediately follow the number without spaces (e.g. 64MB).
    The default chunksize is 4MB.
 
-.. option:: --daos-prefix PREFIX
+.. option:: --xattrs WHICH
 
-   Specify the DAOS prefix to be used. This is only necessary
-   if copying a subset of a POSIX container in DAOS using a
-   Unified Namespace path.
+    Copy extended attributes ("xattrs") from source files to target files.
+    WHICH determines which xattrs are copied.  Options are to copy no xattrs,
+    all xattrs, xattrs not excluded by /etc/xattr.conf, or all xattrs except
+    those which have special meaning to Lustre.  Certain xattrs control Lustre
+    features on a file-by-file basis, such as how the file data is distributed
+    across Lustre servers.  Values must be in {none, all, libattr, non-lustre}.
+    The default is non-lustre.
 
 .. option:: --daos-api API
 
@@ -76,6 +83,10 @@ OPTIONS
 
    Use O_DIRECT to avoid caching file data.
 
+.. option:: --open-noatime
+
+   Open files with O_NOATIME flag.
+
 .. option:: --link-dest DIR
 
    Create hardlink in DEST to files in DIR when file is unchanged
@@ -87,10 +98,10 @@ OPTIONS
    in /src.bak will instead be hardlinked to the file in /src.bak:
 
    # initial backup of /src
-   dsync /src /src.bak
+   ``dsync /src /src.bak``
 
    # incremental backup of /src
-   dsync --link-dest /src.bak /src /src.bak.inc
+   ``dsync --link-dest /src.bak /src /src.bak.inc``
 
 .. option:: -S, --sparse
 

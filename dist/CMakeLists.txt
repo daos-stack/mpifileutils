@@ -91,11 +91,6 @@ INCLUDE(SetupMPI)
 INCLUDE_DIRECTORIES(${MPI_C_INCLUDE_PATH})
 LIST(APPEND MFU_EXTERNAL_LIBS ${MPI_C_LIBRARIES})
 
-## DTCMP
-FIND_PACKAGE(DTCMP REQUIRED)
-INCLUDE_DIRECTORIES(${DTCMP_INCLUDE_DIRS})
-LIST(APPEND MFU_EXTERNAL_LIBS ${DTCMP_LIBRARIES})
-
 ## LIBARCHIVE
 OPTION(ENABLE_LIBARCHIVE "Enable usage of libarchive and corresponding tools" ON)
 MESSAGE(STATUS "ENABLE_LIBARCHIVE: ${ENABLE_LIBARCHIVE}")
@@ -110,7 +105,7 @@ IF(ENABLE_LIBARCHIVE)
   ADD_DEFINITIONS(-DLIBARCHIVE_SUPPORT)
 ENDIF(ENABLE_LIBARCHIVE)
 
-## hdf5 
+## hdf5
 OPTION(ENABLE_HDF5 "Enable HDF5 library")
 MESSAGE(STATUS "ENABLE_HDF5: ${ENABLE_HDF5}")
 IF(ENABLE_HDF5)
@@ -135,11 +130,6 @@ IF(ENABLE_DAOS)
   LIST(APPEND MFU_EXTERNAL_LIBS ${DAOS_COMMON_LIBRARIES})
   ADD_DEFINITIONS(-DDAOS_SUPPORT)
 ENDIF(ENABLE_DAOS)
-
-## LIBCIRCLE
-FIND_PACKAGE(LibCircle REQUIRED)
-INCLUDE_DIRECTORIES(${LibCircle_INCLUDE_DIRS})
-LIST(APPEND MFU_EXTERNAL_LIBS ${LibCircle_LIBRARIES})
 
 ## BZip2
 FIND_PACKAGE(BZip2 REQUIRED)
@@ -196,11 +186,148 @@ ENDIF("${isSystemDir}" STREQUAL "-1")
 
 # Subdirectories
 INCLUDE(MFU_ADD_TOOL)
+INCLUDE_DIRECTORIES(
+  ${CMAKE_CURRENT_SOURCE_DIR}/lwgrp/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/dtcmp/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/libcircle/libcircle
+  ${CMAKE_CURRENT_SOURCE_DIR}/mpifileutils/src/common
+)
 
-# use BEFORE to place build directory first when searching for header files
-# otherwise the build can use old header files from the install path instead
-INCLUDE_DIRECTORIES(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src/common)
+ADD_SUBDIRECTORY(mpifileutils/src)
+ADD_SUBDIRECTORY(mpifileutils/test)
+ADD_SUBDIRECTORY(mpifileutils/man)
 
-ADD_SUBDIRECTORY(src)
-ADD_SUBDIRECTORY(test)
-ADD_SUBDIRECTORY(man)
+# Version for the shared mfu library
+set(MFU_VERSION_MAJOR 4) # Incompatible API changes
+set(MFU_VERSION_MINOR 0) # Backwards-compatible functionality
+set(MFU_VERSION_PATCH 0) # Backwards-compatible fixes
+set(MFU_VERSION ${MFU_VERSION_MAJOR}.${MFU_VERSION_MINOR}.${MFU_VERSION_PATCH})
+
+LIST(APPEND lwgrp_srcs
+    lwgrp/src/lwgrp.c
+    lwgrp/src/lwgrp_util.c
+    lwgrp/src/lwgrp_chain_ops.c
+    lwgrp/src/lwgrp_ring_ops.c
+    lwgrp/src/lwgrp_logchain_ops.c
+    lwgrp/src/lwgrp_logring_ops.c
+    lwgrp/src/lwgrp_comm.c
+    lwgrp/src/lwgrp_comm_split.c
+)
+
+LIST(APPEND dtcmp_srcs
+    dtcmp/src/dtcmp.c
+    dtcmp/src/dtcmp_util.c
+    dtcmp/src/dtcmp_ops.c
+    dtcmp/src/dtcmp_uniqify.c
+    dtcmp/src/dtcmp_search_binary.c
+    dtcmp/src/dtcmp_partitionz.c
+    dtcmp/src/dtcmp_partitionz_list.c
+    dtcmp/src/dtcmp_partition_local.c
+    dtcmp/src/dtcmp_merge_2way.c
+    dtcmp/src/dtcmp_merge_kway_heap.c
+    dtcmp/src/dtcmp_select_local_ends.c
+    dtcmp/src/dtcmp_select_local_randpartition.c
+    dtcmp/src/dtcmp_selectv_rand.c
+    dtcmp/src/dtcmp_selectv_medianofmedians.c
+    dtcmp/src/dtcmp_is_sorted.c
+    dtcmp/src/dtcmp_sort_local_insertionsort.c
+    dtcmp/src/dtcmp_sort_local_randquicksort.c
+    dtcmp/src/dtcmp_sort_local_mergesort.c
+    dtcmp/src/dtcmp_sort_local_qsort.c
+    dtcmp/src/dtcmp_sort_allgather.c
+    dtcmp/src/dtcmp_sort_bitonic.c
+    dtcmp/src/dtcmp_sort_samplesort.c
+    dtcmp/src/dtcmp_sortv_allgather.c
+    dtcmp/src/dtcmp_sortv_sortgather_scatter.c
+    dtcmp/src/dtcmp_sortv_cheng.c
+    dtcmp/src/dtcmp_sortz_samplesort.c
+    dtcmp/src/dtcmp_rankv_sort.c
+    dtcmp/src/dtcmp_seg_exscan.c
+)
+
+LIST(APPEND libcircle_srcs
+    libcircle/libcircle/lib.c
+    libcircle/libcircle/queue.c
+    libcircle/libcircle/token.c
+    libcircle/libcircle/worker.c
+)
+
+# todo re-asses if all of these must be *installed*
+LIST(APPEND libmfu_install_headers
+  mpifileutils/src/common/mfu.h
+  mpifileutils/src/common/mfu_errors.h
+  mpifileutils/src/common/mfu_bz2.h
+  mpifileutils/src/common/mfu_flist.h
+  mpifileutils/src/common/mfu_flist_internal.h
+  mpifileutils/src/common/mfu_io.h
+  mpifileutils/src/common/mfu_param_path.h
+  mpifileutils/src/common/mfu_path.h
+  mpifileutils/src/common/mfu_pred.h
+  mpifileutils/src/common/mfu_progress.h
+  mpifileutils/src/common/mfu_util.h
+  )
+if(ENABLE_DAOS)
+  LIST(APPEND libmfu_install_headers
+    mpifileutils/src/common/mfu_daos.h
+    )
+ENDIF(ENABLE_DAOS)
+
+INSTALL(FILES ${libmfu_install_headers} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# common library
+LIST(APPEND libmfu_srcs
+  mpifileutils/src/common/mfu_bz2.c
+  mpifileutils/src/common/mfu_bz2_static.c
+  mpifileutils/src/common/mfu_compress_bz2_libcircle.c
+  mpifileutils/src/common/mfu_decompress_bz2_libcircle.c
+  mpifileutils/src/common/mfu_flist.c
+  mpifileutils/src/common/mfu_flist_chunk.c
+  mpifileutils/src/common/mfu_flist_copy.c
+  mpifileutils/src/common/mfu_flist_io.c
+  mpifileutils/src/common/mfu_flist_chmod.c
+  mpifileutils/src/common/mfu_flist_create.c
+  mpifileutils/src/common/mfu_flist_remove.c
+  mpifileutils/src/common/mfu_flist_sort.c
+  mpifileutils/src/common/mfu_flist_usrgrp.c
+  mpifileutils/src/common/mfu_flist_walk.c
+  mpifileutils/src/common/mfu_io.c
+  mpifileutils/src/common/mfu_param_path.c
+  mpifileutils/src/common/mfu_path.c
+  mpifileutils/src/common/mfu_pred.c
+  mpifileutils/src/common/mfu_progress.c
+  mpifileutils/src/common/mfu_util.c
+  mpifileutils/src/common/strmap.c
+  ${lwgrp_srcs}
+  ${dtcmp_srcs}
+  ${libcircle_srcs}
+  )
+IF(ENABLE_LIBARCHIVE)
+  LIST(APPEND libmfu_srcs
+    mpifileutils/src/common/mfu_flist_archive.c
+    )
+ENDIF(ENABLE_LIBARCHIVE)
+IF(ENABLE_DAOS)
+  LIST(APPEND libmfu_srcs
+    mpifileutils/src/common/mfu_daos.c
+    )
+ENDIF(ENABLE_DAOS)
+
+ADD_LIBRARY(mfu_o OBJECT ${libmfu_srcs})
+SET_TARGET_PROPERTIES(mfu_o PROPERTIES C_STANDARD 99)
+
+ADD_LIBRARY(mfu SHARED $<TARGET_OBJECTS:mfu_o>)
+TARGET_LINK_LIBRARIES(mfu LINK_PUBLIC ${MFU_EXTERNAL_LIBS})
+SET_TARGET_PROPERTIES(mfu PROPERTIES VERSION ${MFU_VERSION} OUTPUT_NAME mfu CLEAN_DIRECT_OUTPUT 1)
+INSTALL(TARGETS mfu DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+ADD_LIBRARY(mfu-static STATIC $<TARGET_OBJECTS:mfu_o>)
+TARGET_LINK_LIBRARIES(mfu-static LINK_PUBLIC ${MFU_EXTERNAL_LIBS})
+SET_TARGET_PROPERTIES(mfu-static PROPERTIES OUTPUT_NAME mfu CLEAN_DIRECT_OUTPUT 1)
+INSTALL(TARGETS mfu-static DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+# some projects require a "make install" command to work,
+# so define at least a basic INSTALL function
+INSTALL(FILES lwgrp/README lwgrp/LICENSE.TXT DESTINATION share/lwgrp)
+INSTALL(FILES dtcmp/README.md dtcmp/LICENSE.TXT DESTINATION share/dtcmp)
+INSTALL(FILES libcircle/COPYING DESTINATION share/libcircle)
+INSTALL(FILES mpifileutils/LICENSE mpifileutils/NOTICE DESTINATION share/mpifileutils)

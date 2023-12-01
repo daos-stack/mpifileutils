@@ -79,8 +79,8 @@ void print_usage(void)
 #endif
     printf("  -b, --bufsize <SIZE>     - IO buffer size in bytes (default " MFU_BUFFER_SIZE_STR ")\n");
     printf("  -k, --chunksize <SIZE>   - work size per task in bytes (default " MFU_CHUNK_SIZE_STR ")\n");
+    printf("  -X, --xattrs <OPT>       - copy xattrs (none, all, non-lustre, libattr)\n");
 #ifdef DAOS_SUPPORT
-    printf("      --daos-prefix        - DAOS prefix for unified namespace path\n");
     printf("      --daos-api           - DAOS API in {DFS, DAOS} (default uses DFS for POSIX containers)\n");
 #ifdef HDF5_SUPPORT
     printf("      --daos-preserve      - preserve DAOS container properties and user attributes, a filename "
@@ -90,10 +90,13 @@ void print_usage(void)
     printf("  -i, --input <file>       - read source list from file\n");
     printf("  -L, --dereference        - copy original files instead of links\n");
     printf("  -P, --no-dereference     - don't follow links in source\n");
-    printf("  -p, --preserve           - preserve permissions, ownership, timestamps, extended attributes\n");
+    printf("  -p, --preserve           - preserve permissions, ownership, timestamps (see also --xattrs)\n");
     printf("  -s, --direct             - open files with O_DIRECT\n");
+    printf("      --open-noatime       - open files with O_NOATIME\n");
     printf("  -S, --sparse             - create sparse files when possible\n");
     printf("      --progress <N>       - print progress every N seconds\n");
+    printf("  -G  --gid <GID>          - Set the group id to perform copy\n");
+    printf("  -U  --uid <UID>          - Set the user id to perform copy\n");
     printf("  -v, --verbose            - verbose output\n");
     printf("  -q, --quiet              - quiet output\n");
     printf("  -h, --help               - print usage\n");
@@ -106,6 +109,9 @@ int main(int argc, char** argv)
 {
     /* assume we'll exit with success */
     int rc = 0;
+
+    /* effective group/user id */
+    uid_t gid = 0, uid = 0;
 
     /* initialize MPI */
     MPI_Init(&argc, &argv);
@@ -145,18 +151,21 @@ int main(int argc, char** argv)
         {"bufsize"              , required_argument, 0, 'b'},
         {"debug"                , required_argument, 0, 'd'}, // undocumented
         {"grouplock"            , required_argument, 0, 'g'}, // untested
-        {"daos-prefix"          , required_argument, 0, 'X'},
-        {"daos-api"             , required_argument, 0, 'x'},
+        {"daos-api"             , required_argument, 0, 'y'},
         {"daos-preserve"        , required_argument, 0, 'D'},
         {"input"                , required_argument, 0, 'i'},
         {"chunksize"            , required_argument, 0, 'k'},
+        {"xattrs"               , required_argument, 0, 'X'},
         {"dereference"          , no_argument      , 0, 'L'},
         {"no-dereference"       , no_argument      , 0, 'P'},
         {"preserve"             , no_argument      , 0, 'p'},
         {"synchronous"          , no_argument      , 0, 's'},
         {"direct"               , no_argument      , 0, 's'},
+        {"open-noatime"         , no_argument      , 0, 'A'},
         {"sparse"               , no_argument      , 0, 'S'},
         {"progress"             , required_argument, 0, 'R'},
+        {"gid"                  , required_argument, 0, 'G'},
+        {"uid"                  , required_argument, 0, 'U'},
         {"verbose"              , no_argument      , 0, 'v'},
         {"quiet"                , no_argument      , 0, 'q'},
         {"help"                 , no_argument      , 0, 'h'},
@@ -168,7 +177,7 @@ int main(int argc, char** argv)
     int usage = 0;
     while(1) {
         int c = getopt_long(
-                    argc, argv, "b:d:g:i:k:LPpsSvqh",
+                    argc, argv, "b:d:g:G:i:k:LPpsSU:vqhX:",
                     long_options, &option_index
                 );
 
@@ -231,6 +240,15 @@ int main(int argc, char** argv)
                     }
                 }
                 break;
+            case 'X':
+                mfu_copy_opts->copy_xattrs = parse_copy_xattrs_option(optarg);
+                if (mfu_copy_opts->copy_xattrs == XATTR_COPY_INVAL) {
+                    if (rank == 0) {
+                        MFU_LOG(MFU_LOG_ERR, "Unrecognized option '%s' for --xattrs", optarg);
+                    }
+                    usage = 1;
+                }
+                break;
 #ifdef LUSTRE_SUPPORT
             case 'g':
                 mfu_copy_opts->grouplock_id = atoi(optarg);
@@ -241,10 +259,7 @@ int main(int argc, char** argv)
                 break;
 #endif
 #ifdef DAOS_SUPPORT
-            case 'X':
-                daos_args->dfs_prefix = MFU_STRDUP(optarg);
-                break;
-            case 'x':
+            case 'y':
                 if (daos_parse_api_str(optarg, &daos_args->api) != 0) {
                     MFU_LOG(MFU_LOG_ERR, "Failed to parse --daos-api");
                     usage = 1;
@@ -301,6 +316,12 @@ int main(int argc, char** argv)
                     MFU_LOG(MFU_LOG_INFO, "Using O_DIRECT");
                 }
                 break;
+            case 'A':
+                mfu_copy_opts->open_noatime = true;
+                if(rank == 0) {
+                    MFU_LOG(MFU_LOG_INFO, "Using O_NOATIME");
+                }
+                break;
             case 'S':
                 mfu_copy_opts->sparse = 1;
                 if(rank == 0) {
@@ -309,6 +330,12 @@ int main(int argc, char** argv)
                 break;
             case 'R':
                 mfu_progress_timeout = atoi(optarg);
+                break;
+            case 'G':
+                gid = atoi(optarg);
+                break;
+            case 'U':
+                uid = atoi(optarg);
                 break;
             case 'v':
                 mfu_debug_level = MFU_LOG_VERBOSE;
@@ -367,6 +394,29 @@ int main(int argc, char** argv)
         MPI_Finalize();
         return 1;
     }
+
+    /* set egid */
+    if (gid > 0) {
+        if (setegid(gid) < 0) {
+            MFU_LOG(MFU_LOG_ERR, "Could not set Group ID: %s", strerror(errno));
+            mfu_finalize();
+            MPI_Finalize();
+            return 1;
+        }
+        MFU_LOG(MFU_LOG_INFO, "Set Group ID to %u", gid);
+    }
+
+    /* set euid */
+    if (uid > 0) {
+        if (seteuid(uid) < 0) {
+            MFU_LOG(MFU_LOG_ERR, "Could not set User ID: %s", strerror(errno));
+            mfu_finalize();
+            MPI_Finalize();
+            return 1;
+        }
+        MFU_LOG(MFU_LOG_INFO, "Set User ID to %u", uid);
+    }
+
 
 #ifdef DAOS_SUPPORT
     /* Set up DAOS arguments, containers, dfs, etc. */

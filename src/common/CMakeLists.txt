@@ -1,5 +1,5 @@
 # Version for the shared mfu library
-set(MFU_VERSION_MAJOR 3) # Incompatible API changes
+set(MFU_VERSION_MAJOR 4) # Incompatible API changes
 set(MFU_VERSION_MINOR 0) # Backwards-compatible functionality
 set(MFU_VERSION_PATCH 0) # Backwards-compatible fixes
 set(MFU_VERSION ${MFU_VERSION_MAJOR}.${MFU_VERSION_MINOR}.${MFU_VERSION_PATCH})
@@ -15,6 +15,7 @@ LIST(APPEND libmfu_install_headers
   mfu_param_path.h
   mfu_path.h
   mfu_pred.h
+  mfu_proc.h
   mfu_progress.h
   mfu_util.h
   )
@@ -46,6 +47,7 @@ LIST(APPEND libmfu_srcs
   mfu_param_path.c
   mfu_path.c
   mfu_pred.c
+  mfu_proc.c
   mfu_progress.c
   mfu_util.c
   strmap.c

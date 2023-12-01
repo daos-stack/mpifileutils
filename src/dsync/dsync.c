@@ -63,8 +63,8 @@ static void print_usage(void)
     printf("  -b  --batch-files <N>   - batch files into groups of N during copy\n");
     printf("      --bufsize <SIZE>    - IO buffer size in bytes (default " MFU_BUFFER_SIZE_STR ")\n");
     printf("      --chunksize <SIZE>  - minimum work size per task in bytes (default " MFU_CHUNK_SIZE_STR ")\n");
+    printf("  -X, --xattrs <OPT>      - copy xattrs (none, all, non-lustre, libattr)\n");
 #ifdef DAOS_SUPPORT
-    printf("      --daos-prefix       - DAOS prefix for unified namespace path \n");
     printf("      --daos-api          - DAOS API in {DFS, DAOS} (default uses DFS for POSIX containers)\n");
 #endif
     printf("  -c, --contents          - read and compare file contents rather than compare size and mtime\n");
@@ -72,6 +72,7 @@ static void print_usage(void)
     printf("  -L, --dereference       - copy original files instead of links\n");
     printf("  -P, --no-dereference    - don't follow links in source\n"); 
     printf("  -s, --direct            - open files with O_DIRECT\n");
+    printf("      --open-noatime      - open files with O_NOATIME\n");
     printf("      --link-dest <DIR>   - hardlink to files in DIR when unchanged\n");
     printf("  -S, --sparse            - create sparse files when possible\n");
     printf("      --progress <N>      - print progress every N seconds\n");
@@ -1923,6 +1924,10 @@ static int dsync_strmap_compare(
         }
     }
 
+    if (rank == 0) {
+        MFU_LOG(MFU_LOG_INFO, "Completed updating timestamps");
+    }
+
     /* done with our list of files for refreshing metadata */
     strmap_delete(&metadata_refresh);
 
@@ -3017,13 +3022,14 @@ int main(int argc, char **argv)
         {"batch-files",    1, 0, 'b'},
         {"bufsize",        1, 0, 'B'},
         {"chunksize",      1, 0, 'k'},
-        {"daos-prefix",    1, 0, 'X'},
-        {"daos-api",       1, 0, 'x'},
+        {"xattrs",         1, 0, 'X'},
+        {"daos-api",       1, 0, 'y'},
         {"contents",       0, 0, 'c'},
         {"delete",         0, 0, 'D'},
         {"dereference",    0, 0, 'L'},
         {"no-dereference", 0, 0, 'P'},
         {"direct",         0, 0, 's'},
+        {"open-noatime",   0, 0, 'U'},
         {"output",         1, 0, 'o'}, // undocumented
         {"debug",          0, 0, 'd'}, // undocumented
         {"link-dest",      1, 0, 'l'},
@@ -3047,7 +3053,7 @@ int main(int argc, char **argv)
 
     while (1) {
         int c = getopt_long(
-            argc, argv, "b:cDso:LPSvqh",
+            argc, argv, "b:cDso:LPSvqhX:",
             long_options, &option_index
         );
 
@@ -3081,11 +3087,17 @@ int main(int argc, char **argv)
                 copy_opts->chunk_size = bytes;
             }
             break;
-#ifdef DAOS_SUPPORT
         case 'X':
-            daos_args->dfs_prefix = MFU_STRDUP(optarg);
+            copy_opts->copy_xattrs = parse_copy_xattrs_option(optarg);
+            if (copy_opts->copy_xattrs == XATTR_COPY_INVAL) {
+                if (rank == 0) {
+                    MFU_LOG(MFU_LOG_ERR, "Unrecognized option '%s' for --xattrs", optarg);
+                }
+                usage = 1;
+            }
             break;
-        case 'x':
+#ifdef DAOS_SUPPORT
+        case 'y':
             if (daos_parse_api_str(optarg, &daos_args->api) != 0) {
                 MFU_LOG(MFU_LOG_ERR, "Failed to parse --daos-api");
                 usage = 1;
@@ -3118,6 +3130,12 @@ int main(int argc, char **argv)
             copy_opts->direct = true;
             if(rank == 0) {
                 MFU_LOG(MFU_LOG_INFO, "Using O_DIRECT");
+            }
+            break;
+        case 'U':
+            copy_opts->open_noatime = true;
+            if(rank == 0) {
+                MFU_LOG(MFU_LOG_INFO, "Using O_NOATIME");
             }
             break;
         case 'l':
@@ -3397,6 +3415,10 @@ dsync_common_cleanup:
     /* delete file objects */
     mfu_file_delete(&mfu_src_file);
     mfu_file_delete(&mfu_dst_file);
+
+    if (rank == 0) {
+        MFU_LOG(MFU_LOG_INFO, "Completed sync");
+    }
 
     /* shut down */
     mfu_finalize();

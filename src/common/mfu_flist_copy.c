@@ -18,6 +18,10 @@
 #include <time.h> /* asctime / localtime */
 #include <regex.h>
 
+#ifdef HAVE_LIBATTR
+#include <attr/libattr.h>
+#endif /* HAVE_LIBATTR */
+
 /* These headers are needed to query the Lustre MDS for stat
  * information.  This information may be incomplete, but it
  * is faster than a normal stat, which requires communication
@@ -62,6 +66,10 @@
 
 #ifdef GPFS_SUPPORT
 #include <gpfs.h>
+#endif
+
+#ifdef HPSS_SUPPORT
+#include <linux/hpssfs.h>
 #endif
 
 /****************************************
@@ -155,10 +163,6 @@ static int mfu_copy_open_file(
     char* name = cache->name;
     if (name != NULL) {
         /* we have a cached file descriptor */
-        int fd = cache->fd;
-#ifdef DAOS_SUPPORT
-        dfs_obj_t* obj = cache->obj;
-#endif
         if (strcmp(name, file) == 0 && cache->read == read_flag) {
             /* the file we're trying to open matches name and read/write mode,
              * so just return the cached descriptor */
@@ -174,6 +178,9 @@ static int mfu_copy_open_file(
     /* open the new file, this sets mfu_file->fd/obj */
     if (read_flag) {
         int flags = O_RDONLY;
+        if (copy_opts->open_noatime) {
+            flags |= O_NOATIME;
+        }
         if (copy_opts->direct) {
             flags |= O_DIRECT;
         }
@@ -240,9 +247,6 @@ static int mfu_copy_close_file(
     char* name = cache->name;
     if (name != NULL) {
         int fd = cache->fd;
-#ifdef DAOS_SUPPORT
-        dfs_obj_t* obj = cache->obj;
-#endif
         /* if open for write, fsync */
         int read_flag = cache->read;
         if (! read_flag && mfu_file->type == POSIX) {
@@ -330,18 +334,40 @@ static int mfu_copy_xattrs(
     /* iterate over list and copy values to new object lgetxattr/lsetxattr */
     if(got_list) {
         char* name = list;
-
         while(name < list + list_size) {
             /* start with a reasonable buffer,
              * allocate something bigger as needed */
             size_t val_bufsize = 1024;
             void* val = (void*) MFU_MALLOC(val_bufsize);
+            int copy_xattr;
 
             /* lookup value for name */
             ssize_t val_size;
             int got_val = 0;
 
-            while(! got_val) {
+            copy_xattr = 1; /* copy unless indicated below not to */
+            if (copy_opts->copy_xattrs == XATTR_USE_LIBATTR) {
+#ifdef HAVE_LIBATTR
+                if (attr_copy_action(name, NULL) == ATTR_ACTION_SKIP) {
+                    copy_xattr = 0;
+                }
+#endif /* HAVE_LIBATTR */
+            } else if (copy_opts->copy_xattrs == XATTR_SKIP_LUSTRE) {
+                /* ignore xattrs lustre treats specially */
+                /* list from lustre source file lustre_idl.h */
+                if (    strncmp(name,"lustre.",strlen("lustre.")) == 0 ||
+                        strcmp(name,"trusted.som") == 0 || strcmp(name,"trusted.lov") == 0 ||
+                        strcmp(name,"trusted.lma") == 0 || strcmp(name,"trusted.lmv") == 0 ||
+                        strcmp(name,"trusted.dmv") == 0 || strcmp(name,"trusted.link") == 0 ||
+                        strcmp(name,"trusted.fid") == 0 || strcmp(name,"trusted.version") == 0 ||
+                        strcmp(name,"trusted.hsm") == 0 || strcmp(name,"trusted.lfsck_bitmap") == 0 ||
+                        strcmp(name,"trusted.dummy") == 0)
+                {
+                    copy_xattr = 0;
+                }
+            }
+
+            while(! got_val && copy_xattr) {
                 errno = 0;
                 if (copy_opts->dereference) {
                     /* getxattr of dereferenced symbolic links */
@@ -390,7 +416,7 @@ static int mfu_copy_xattrs(
             }
 
             /* set attribute on destination object */
-            if(got_val) {
+            if(got_val && copy_xattr) {
                 errno = 0;
                 /* lsetxattr of symbolic link itself. No need to dereference here */
                 int setrc = mfu_file_lsetxattr(dest_path, name, val, (size_t) val_size, 0, mfu_dst_file);
@@ -923,9 +949,9 @@ static int mfu_copy_set_metadata_dirs(
 
 /* creates dir in destpath for specified item, identifies source path
  * that contains source dir, computes relative path to dir under source path,
- * and creates dir at same relative path under destpath, copies xattrs
- * when preserving permissions, which contains file striping info on Lustre,
- * returns 0 on success and -1 on error */
+ * and creates dir at same relative path under destpath, optionally copies
+ * xattrs (which contain striping information under Lustre), optionally
+ * preserves permissions, returns 0 on success and -1 on error */
 static int mfu_create_directory(
     mfu_flist list,                 /* flist holding target directory */
     uint64_t idx,                   /* index of target directory within its list */
@@ -993,7 +1019,7 @@ static int mfu_create_directory(
      * creating / striping files in the directory */
 
     /* copy extended attributes on directory */
-    if (copy_opts->preserve) {
+    if (copy_opts->copy_xattrs != XATTR_COPY_NONE) {
         int tmp_rc = mfu_copy_xattrs(list, idx, dest_path, copy_opts, mfu_src_file, mfu_dst_file);
         if (tmp_rc < 0) {
             rc = -1;
@@ -1026,9 +1052,6 @@ static int mfu_create_directories(
 {
     /* assume we'll succeed */
     int rc = 0;
-
-    /* determine whether we should print status messages */
-    int verbose = (mfu_debug_level >= MFU_LOG_VERBOSE);
 
     /* get current rank */
     int rank;
@@ -1078,7 +1101,6 @@ static int mfu_create_directories(
         /* create each directory we have at this level */
         uint64_t idx;
         uint64_t size = mfu_flist_size(list);
-        uint64_t count = 0;
         for (idx = 0; idx < size; idx++) {
             /* check whether we have a directory */
             mfu_filetype type = mfu_flist_file_get_type(list, idx);
@@ -1166,8 +1188,8 @@ static int mfu_create_link(
         }
     }
 
-    /* set permissions on link */
-    if (copy_opts->preserve) {
+    /* set xattrs on link */
+    if (copy_opts->copy_xattrs != XATTR_COPY_NONE) {
         int xattr_rc = mfu_copy_xattrs(list, idx, dest_path, copy_opts, mfu_src_file, mfu_dst_file);
         if (xattr_rc < 0) {
             rc = -1;
@@ -1185,9 +1207,9 @@ static int mfu_create_link(
 
 /* creates inode in destpath for specified file, identifies source path
  * that contains source file, computes relative path to file under source path,
- * and creates file at same relative path under destpath, copies xattrs
- * when preserving permissions, which contains file striping info on Lustre,
- * returns 0 on success and -1 on error */
+ * and creates file at same relative path under destpath, optionally copies
+ * xattrs (which contain striping information under Lustre), optionally
+ * preserves permissions, returns 0 on success and -1 on error */
 static int mfu_create_file(
     mfu_flist list,
     uint64_t idx,
@@ -1240,7 +1262,7 @@ static int mfu_create_file(
     /* copy extended attributes, important to do this first before
      * writing data because some attributes tell file system how to
      * stripe data, e.g., Lustre */
-    if (copy_opts->preserve) {
+    if (copy_opts->copy_xattrs != XATTR_COPY_NONE) {
         int tmp_rc = mfu_copy_xattrs(list, idx, dest_path, copy_opts, mfu_src_file, mfu_dst_file);
         if (tmp_rc < 0) {
             rc = -1;
@@ -1273,6 +1295,62 @@ static int mfu_create_file(
                     dest_path, errno, strerror(errno));
         }
     }
+
+#ifdef HPSS_SUPPORT
+
+    /*
+     *  For HPSS we want to ensure that the file is placed in the correct Class
+     *  of Service (COS). The simplest way to do that is to give a hint to the
+     *  Core Server about what size the destination file will be.
+     *
+     */
+
+    if ( mfu_is_hpss(dest_path) == true ) {
+
+        uint64_t sourcesize = mfu_flist_file_get_size(list, idx);
+        if (sourcesize != (uint64_t) -1) {
+
+            /*
+             * Get the current size of the destintation file.
+             * If the size is greater than 0, the ioctl will fail, so dont bother.
+             *
+             */
+
+            struct stat hpssst;
+            int hpssrc = mfu_file_lstat(dest_path, &hpssst, mfu_dst_file);
+            if (hpssrc == 0 && hpssst.st_size == 0) {
+                errno = 0;
+                hpssrc = mfu_file_open(dest_path, O_RDWR|O_CREAT|O_NONBLOCK, mfu_dst_file);
+                MFU_LOG(MFU_LOG_DBG, "mfu_open(complete): %s (%d %d %s)", dest_path, mfu_dst_file->fd, errno, strerror(errno));
+                if (hpssrc != -1) {
+                    MFU_LOG(MFU_LOG_DBG, "Calling ioctl...source size is: %lu", sourcesize);
+                    errno = 0;
+                    int ioctlrc = ioctl(mfu_dst_file->fd, HPSSFS_SET_FSIZE_HINT, &sourcesize);
+                    MFU_LOG(MFU_LOG_DBG, "Done Calling ioctl (%d)(%d)(%s)", ioctlrc, errno, strerror(errno));
+                    (void) mfu_file_close(dest_path, mfu_dst_file);
+                } else {
+                    /* had an error opening the destination file */
+                    MFU_LOG(MFU_LOG_ERR, "mfu_file_open() file: `%s' (errno=%d %s)", dest_path, errno, strerror(errno));
+                    rc = -1;
+                }
+
+            } else {
+                /*
+                 * had an error getting the size of the sink file or the size is
+                 * greater than zero. we will allow the sync to continue on without
+                 * setting the COS
+                 */
+                MFU_LOG(MFU_LOG_WARN, "mfu_file_lstat() file: `%s' (errno=%d %s) (size=%llu)", dest_path, errno, strerror(errno), hpssst.st_size);
+            }
+
+        } else {
+            /* had an error getting the size of the source file.
+             * we will allow the sync to continue on without setting the COS */
+            MFU_LOG(MFU_LOG_WARN, "mfu_flist_file_get_size() error: `%s'", src_path);
+        }
+    }
+
+#endif
 
     /* free destination path */
     mfu_free(&dest_path);
@@ -1376,9 +1454,6 @@ static int mfu_create_files(
 {
     int rc = 0;
 
-    /* determine whether we should print status messages */
-    int verbose = (mfu_debug_level >= MFU_LOG_VERBOSE);
-
     /* get current rank */
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -1480,9 +1555,6 @@ static int mfu_create_hardlinks(
 {
     int rc = 0;
 
-    /* determine whether we should print status messages */
-    int verbose = (mfu_debug_level >= MFU_LOG_VERBOSE);
-
     /* get current rank */
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -1530,7 +1602,6 @@ static int mfu_create_hardlinks(
         /* iterate over items and create hardlink for each */
         uint64_t idx;
         uint64_t size = mfu_flist_size(list);
-        uint64_t count = 0;
         for (idx = 0; idx < size; idx++) {
             /* get type of item */
             mfu_filetype type = mfu_flist_file_get_type(list, idx);
@@ -1672,12 +1743,20 @@ static int mfu_copy_file_normal(
         /* If we're using O_DIRECT, deal with short reads.
          * Retry with same buffer and offset since those must
          * be aligned at block boundaries. */
+        int retries = 0;
         while (copy_opts->direct &&            /* using O_DIRECT */
                bytes_read > 0 &&               /* read was not an error or eof */
                bytes_read < left_to_read &&    /* shorter than requested */
                (off + bytes_read) < file_size) /* not at end of file */
         {
-            /* TODO: probably should retry a limited number of times then abort */
+            /* try the read a limited number of times then given up with error */
+            retries++;
+            if (retries == 5) {
+              MFU_LOG(MFU_LOG_ERR, "Source file `%s' exceeded short read limit, maybe shorter than expected size of %llu bytes",
+                  src, file_size);
+              return -1;
+            }
+
             bytes_read = mfu_file_pread(src, buf, left_to_read, off, mfu_src_file);
         }
 
@@ -1690,8 +1769,8 @@ static int mfu_copy_file_normal(
 
         /* check for early EOF */
         if (bytes_read == 0) {
-            MFU_LOG(MFU_LOG_ERR, "Source file `%s' shorter than expected %llu (errno=%d %s)",
-                src, file_size, errno, strerror(errno));
+            MFU_LOG(MFU_LOG_ERR, "Source file `%s' shorter than expected size of %llu bytes",
+                src, file_size);
             return -1;
         }
 
@@ -3100,23 +3179,19 @@ int mfu_flist_hardlink(
                       mfu_copy_stats.wtime_started;
 
     /* prep our values into buffer */
-    int64_t values[5];
+    int64_t values[3];
     values[0] = mfu_copy_stats.total_dirs;
     values[1] = mfu_copy_stats.total_files;
     values[2] = mfu_copy_stats.total_links;
-    values[3] = mfu_copy_stats.total_size;
-    values[4] = mfu_copy_stats.total_bytes_copied;
 
     /* sum values across processes */
-    int64_t sums[5];
-    MPI_Allreduce(values, sums, 5, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+    int64_t sums[3];
+    MPI_Allreduce(values, sums, 3, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
 
     /* extract results from allreduce */
     int64_t agg_dirs   = sums[0];
     int64_t agg_files  = sums[1];
     int64_t agg_links  = sums[2];
-    int64_t agg_size   = sums[3];
-    int64_t agg_copied = sums[4];
 
     if(rank == 0) {
         /* format start time */
@@ -3229,7 +3304,6 @@ mfu_file_t* mfu_file_new(void)
 void mfu_file_delete(mfu_file_t** pfile)
 {
   if (pfile != NULL) {
-    mfu_file_t* mfile = *pfile;
     mfu_free(pfile);
   }
 }
@@ -3254,6 +3328,9 @@ mfu_copy_opts_t* mfu_copy_opts_new(void)
     /* By default, don't bother to preserve all attributes. */
     opts->preserve = false;
 
+    /* By default, do not copy special to Lustre (which set striping) */
+    opts->copy_xattrs = XATTR_SKIP_LUSTRE;
+
     /* By default, don't dereference source symbolic links. 
      * This is not a perfect opposite of no_dereference */
     opts->dereference = 0;
@@ -3263,6 +3340,9 @@ mfu_copy_opts_t* mfu_copy_opts_new(void)
 
     /* By default, don't use O_DIRECT. */
     opts->direct = false;
+
+    /* By default, don't use O_NOATIME. */
+    opts->open_noatime = false;
 
     /* By default, don't use sparse file. */
     opts->sparse = false;

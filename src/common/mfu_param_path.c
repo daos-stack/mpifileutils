@@ -303,6 +303,31 @@ static void mfu_unpack_param(const char** pptr, mfu_param_path* param)
     return;
 }
 
+/*
+ * Parse an option string provided by the user to determine
+ * which xattrs to copy from source to destination.
+ */
+attr_copy_t parse_copy_xattrs_option(char *optarg)
+{
+    if (strcmp(optarg,"none") == 0) {
+        return XATTR_COPY_NONE;
+    }
+
+    if (strcmp(optarg,"non-lustre") == 0) {
+        return XATTR_SKIP_LUSTRE;
+    }
+
+    if (strcmp(optarg,"libattr") == 0) {
+        return XATTR_USE_LIBATTR;
+    }
+
+    if (strcmp(optarg,"all") == 0) {
+        return XATTR_COPY_ALL;
+    }
+
+    return XATTR_COPY_INVAL;
+}
+
 /**
  * Analyze all file path inputs and place on the work queue.
  *
@@ -376,13 +401,12 @@ char* mfu_param_path_copy_dest(const char* name, int numpaths,
      * if path is root, keep last component.
      * otherwise cut all components listed in source path */
     int cut = src_components;
-    if (mfu_copy_opts->copy_into_dir && cut > 0) {
-        if (strcmp(paths[i].orig, "/") == 0) {
-            cut--;
-        } else if ((mfu_copy_opts->do_sync != 1) &&
-            (paths[i].orig[strlen(paths[i].orig) - 1] != '/')) {
-            cut--;
-        }
+    if (cut > 0 && strcmp(paths[i].orig, "/") == 0) {
+        cut--;
+    }
+    else if ((cut > 0) && mfu_copy_opts->copy_into_dir &&
+            (mfu_copy_opts->do_sync != 1) && (paths[i].orig[strlen(paths[i].orig) - 1] != '/')) {
+        cut--;
     }
 
     /* compute number of components to keep */

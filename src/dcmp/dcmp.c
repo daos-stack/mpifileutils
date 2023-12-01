@@ -42,10 +42,10 @@ static void print_usage(void)
     printf("      --bufsize <SIZE>      - IO buffer size in bytes (default " MFU_BUFFER_SIZE_STR ")\n");
     printf("      --chunksize <SIZE>    - minimum work size per task in bytes (default " MFU_CHUNK_SIZE_STR ")\n");
 #ifdef DAOS_SUPPORT
-    printf("      --daos-prefix         - DAOS prefix for unified namespace path\n");
     printf("      --daos-api            - DAOS API in {DFS, DAOS} (default uses DFS for POSIX containers)\n");
 #endif
     printf("  -s, --direct              - open files with O_DIRECT\n");
+    printf("      --open-noatime        - open files with O_NOATIME\n");
     printf("      --progress <N>        - print progress every N seconds\n");
     printf("  -v, --verbose             - verbose output\n");
     printf("  -q, --quiet               - quiet output\n");
@@ -2119,9 +2119,9 @@ int main(int argc, char **argv)
         {"base",          0, 0, 'b'},
         {"bufsize",       1, 0, 'B'},
         {"chunksize",     1, 0, 'k'},
-        {"daos-prefix",   1, 0, 'X'},
         {"daos-api",      1, 0, 'x'},
         {"direct",        0, 0, 's'},
+        {"open-noatime",  0, 0, 'U'},
         {"progress",      1, 0, 'R'},
         {"verbose",       0, 0, 'v'},
         {"quiet",         0, 0, 'q'},
@@ -2188,6 +2188,12 @@ int main(int argc, char **argv)
                 MFU_LOG(MFU_LOG_INFO, "Using O_DIRECT");
             }
             break;
+        case 'U':
+            copy_opts->open_noatime = true;
+            if(rank == 0) {
+                MFU_LOG(MFU_LOG_INFO, "Using O_NOATIME");
+            }
+            break;
         case 'R':
             mfu_progress_timeout = atoi(optarg);
             break;
@@ -2209,9 +2215,6 @@ int main(int argc, char **argv)
             options.debug++;
             break;
 #ifdef DAOS_SUPPORT
-        case 'X':
-            daos_args->dfs_prefix = MFU_STRDUP(optarg);
-            break;
         case 'x':
             if (daos_parse_api_str(optarg, &daos_args->api) != 0) {
                 MFU_LOG(MFU_LOG_ERR, "Failed to parse --daos-api");
